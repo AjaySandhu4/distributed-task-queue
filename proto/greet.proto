@@ -1,5 +1,6 @@
 syntax = "proto3";
 
+option go_package = "github.com/AjaySandhu4/distributed-task-queue/proto/greet";
 package greet;
 
 service Greeter {

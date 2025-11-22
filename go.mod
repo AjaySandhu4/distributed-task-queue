@@ -1,4 +1,4 @@
-module distributed-task-queue
+module github.com/AjaySandhu4/distributed-task-queue
 
 go 1.24.3
 
