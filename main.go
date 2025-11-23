@@ -31,7 +31,7 @@ func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloRe
 	return &pb.HelloResponse{Message: "Hello " + in.GetName() + " from server " + fmt.Sprintf("%d", s.serverIndex)}, nil
 }
 
-func startServer(serverIndex int, sigChan chan os.Signal) {
+func startServer(serverIndex int, ctx context.Context) {
 	port := serverPorts[serverIndex]
 	fmt.Printf("Starting server on port: %d\n", port)
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -45,12 +45,15 @@ func startServer(serverIndex int, sigChan chan os.Signal) {
 	pb.RegisterGreeterServer(grpcServer, &server{serverIndex: serverIndex})
 
 	// Start the server in a goroutine
-	fmt.Printf("gRPC server listening on port %d\n", port)
-	if err := grpcServer.Serve(lis); err != nil {
-		fmt.Printf("Failed to serve: %v\n", err)
-	}
+	go func() {
+		fmt.Printf("gRPC server listening on port %d\n", port)
+		if err := grpcServer.Serve(lis); err != nil {
+			fmt.Printf("Failed to serve: %v\n", err)
+		}
+	}()
 
-	<-sigChan
+	// Wait for context cancellation to gracefully stop the server
+	<-ctx.Done()
 	fmt.Printf("Shutting down server on port %d\n", port)
 	grpcServer.GracefulStop()
 }
@@ -88,13 +91,12 @@ func main() {
 		panic("Invalid server index.")
 	}
 
-	// Wait for interrupt signal to gracefully shutdown the server
+	ctx, cancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	// ctx, cancel := context.WithCancel(context.Background())
 
 	// Start the server
-	go startServer(serverIndex, sigChan)
+	go startServer(serverIndex, ctx)
 
 	time.Sleep(2 * time.Second) // Wait for all servers to start
 
@@ -105,8 +107,7 @@ func main() {
 		}
 	}
 
-	sigChan2 := make(chan os.Signal, 1)
-	signal.Notify(sigChan2, os.Interrupt, syscall.SIGTERM)
-	<-sigChan2
+	<-sigChan
+	cancel()
 	log.Print("End of main function reached for server ", serverIndex)
 }
