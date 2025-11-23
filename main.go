@@ -31,18 +31,7 @@ func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloRe
 	return &pb.HelloResponse{Message: "Hello " + in.GetName() + " from server " + fmt.Sprintf("%d", s.serverIndex)}, nil
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		panic("Please provide a server index as a command-line argument.")
-	}
-	serverIndex, err := strconv.Atoi(os.Args[1])
-	if err != nil {
-		fmt.Printf("Error converting server index: %v\n", err)
-		return
-	}
-	if serverIndex < 0 || serverIndex >= len(serverPorts) {
-		panic("Invalid server index.")
-	}
+func startServer(serverIndex int, sigChan chan os.Signal) {
 	port := serverPorts[serverIndex]
 	fmt.Printf("Starting server on port: %d\n", port)
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -56,44 +45,68 @@ func main() {
 	pb.RegisterGreeterServer(grpcServer, &server{serverIndex: serverIndex})
 
 	// Start the server in a goroutine
-	go func() {
-		fmt.Printf("gRPC server listening on port %d\n", port)
-		if err := grpcServer.Serve(lis); err != nil {
-			fmt.Printf("Failed to serve: %v\n", err)
-		}
-	}()
+	fmt.Printf("gRPC server listening on port %d\n", port)
+	if err := grpcServer.Serve(lis); err != nil {
+		fmt.Printf("Failed to serve: %v\n", err)
+	}
 
-	time.Sleep(5 * time.Second) // Wait for all servers to start
+	<-sigChan
+	fmt.Printf("Shutting down server on port %d\n", port)
+	grpcServer.GracefulStop()
+}
 
-	for i := range serverPorts {
-		if i != serverIndex {
-			addr := fmt.Sprintf("localhost:%d", serverPorts[i])
-			conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				fmt.Printf("Failed to connect to server %d: %v\n", i, err)
-				continue
-			}
-			c := pb.NewGreeterClient(conn)
-			// Contact the server and print out its response.
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			r, err := c.SayHello(ctx, &pb.HelloRequest{Name: strconv.Itoa(serverIndex)})
-			if err != nil {
-				log.Fatalf("could not greet: %v", err)
-			}
-			log.Printf("Greeting: %s", r.GetMessage())
-			conn.Close()
-			cancel()
-		}
+func sayHelloToServer(targetIndex int, serverIndex int) {
+	log.Println("Saying hello to server", targetIndex, "from server", serverIndex)
+	addr := fmt.Sprintf("localhost:%d", serverPorts[targetIndex])
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fmt.Printf("Failed to connect to server %d: %v\n", targetIndex, err)
+		return
+	}
+	c := pb.NewGreeterClient(conn)
+	// Contact the server and print out its response.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	r, err := c.SayHello(ctx, &pb.HelloRequest{Name: strconv.Itoa(serverIndex)})
+	if err != nil {
+		log.Fatalf("could not greet: %v", err)
+	}
+	log.Printf("Greeting: %s", r.GetMessage())
+	conn.Close()
+	cancel()
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		panic("Please provide a server index as a command-line argument.")
+	}
+	serverIndex, err := strconv.Atoi(os.Args[1])
+	if err != nil {
+		fmt.Printf("Error converting server index: %v\n", err)
+		return
+	}
+	if serverIndex < 0 || serverIndex >= len(serverPorts) {
+		panic("Invalid server index.")
 	}
 
 	// Wait for interrupt signal to gracefully shutdown the server
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	// ctx, cancel := context.WithCancel(context.Background())
 
-	// Block until we receive our signal
-	<-c
+	// Start the server
+	go startServer(serverIndex, sigChan)
 
-	fmt.Println("\nShutting down server...")
-	grpcServer.GracefulStop()
-	fmt.Println("Server exited")
+	time.Sleep(2 * time.Second) // Wait for all servers to start
+
+	// Say hello to other servers in parallel
+	for i := range serverPorts {
+		if i != serverIndex {
+			go sayHelloToServer(i, serverIndex)
+		}
+	}
+
+	sigChan2 := make(chan os.Signal, 1)
+	signal.Notify(sigChan2, os.Interrupt, syscall.SIGTERM)
+	<-sigChan2
+	log.Print("End of main function reached for server ", serverIndex)
 }
